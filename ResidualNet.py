@@ -15,9 +15,9 @@ from PIL import ImageFilter
 
 #Super parameters
 train_batch_size = 4
-num_epochs = 30
-RandomRotation = False
-RandomColorJitter = False
+num_epochs = 20
+RandomRotation = True
+RandomColorJitter = True
 scale = 150
 
 class EdgeDetectionTransform:
@@ -40,12 +40,12 @@ subdirs = [d for d in os.listdir('./runs') if os.path.isdir(os.path.join('./runs
 num_dirs = len(subdirs)
 
 # 创建一个新的 SummaryWriter 对象，其名称基于子目录的数量
-writer = SummaryWriter(f'runs/experiment_{num_dirs + 1}')
+writer = SummaryWriter(f'runs/ResidualNet')
 
 # 定义预处理
 transform = transforms.Compose([
     transforms.RandomRotation(30),
-    EdgeDetectionTransform(),
+    # EdgeDetectionTransform(),
     # transforms.RandomResizedCrop(150),
     # transforms.RandomHorizontalFlip(),
     transforms.ColorJitter(brightness=0.2, contrast=0.2),  # 随机改变亮度和对比度
@@ -73,16 +73,19 @@ class Net(nn.Module):
         self.conv3 = nn.Conv2d(64, 64, 3)
         self.pool3 = nn.MaxPool2d(4, 4)
         # self.fc1 = nn.Linear(64 * 3 * 3, 128)
+        self.dropout = nn.Dropout(0.5)
         self.fc1 = None
         self.fc2 = nn.Linear(256, 128)
         self.fc3 = nn.Linear(128, 3)
         self.device = device
+        self.layer = ResidualBlock(64,64,1)
 
     def forward(self, x):
         x = self.pool1(F.relu(self.conv1(x)))
         # print(x.shape)
         x = self.pool2(F.relu(self.conv2(x)))
         # print(x.shape)
+        x = self.layer(x)
         x = self.pool3(F.relu(self.conv3(x)))
         # print(x.shape)
         x = x.view(x.size(0),-1)
@@ -90,12 +93,37 @@ class Net(nn.Module):
         # x = F.relu(self.fc1(x))
         if self.fc1 is None:
             self.fc1 = nn.Linear(x.size(1), 256).to(self.device)  # dynamically define fc1
-        x = F.relu(self.fc1(x))
+        # x = F.relu(self.fc1(x))
+        x = self.dropout(F.relu(self.fc1(x)))
         # print(x.shape)
         x = self.fc2(x)
         x = self.fc3(x)
         # print(x.shape)
         return x
+    
+# 定义残差网络模型
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = self.relu(out)
+        return out
 
 # model = Net()
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -103,11 +131,16 @@ print(device)
 model = Net(device).to(device)
 
 # 定义损失函数和优化器
+# criterion = nn.CrossEntropyLoss()
+# optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
 
 # 训练模型
-writer.add_text('Training parameters', f'Batch size: {train_batch_size}, Epochs: {num_epochs}, RandomColorJitter: {RandomColorJitter}')
+writer.add_text('Pre-processing', 'RandomRotation: {}, RandomColorJitter: {}, scale: {}'.format(RandomRotation, RandomColorJitter, scale))
+writer.add_text('Optimizer', 'Adam')
+writer.add_text('Dropout', '0.5')
 for epoch in range(num_epochs):  # loop over the dataset multiple times
     start_time = time.time()
     running_loss = 0.0
